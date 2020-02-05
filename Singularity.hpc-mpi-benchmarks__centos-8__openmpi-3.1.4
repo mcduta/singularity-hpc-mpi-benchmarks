@@ -1,0 +1,209 @@
+BootStrap: docker
+From: centos:8
+
+
+%help
+    Container that installs a number of HPC benchmarks to illustrate
+      * Singularity integration with and use of MPI
+      * the steps necessary to enable MPI messaging over IB
+
+    The benchmarks installed are
+      * the OSU suite of micro-benchmarks (http://mvapich.cse.ohio-state.edu/benchmarks/)
+      * the HPCG benchmark (http://www.hpcg-benchmark.org/)
+      * the NAS benchmarks (https://www.nas.nasa.gov/publications/npb.html)
+      * the IOR parallel file system performance benchmark (http://www.nersc.gov/users/computational-systems/cori/nersc-8-procurement/trinity-nersc-8-rfp/nersc-8-trinity-benchmarks/ior/)
+
+    Note: the original recipe for enabling MPI messaging over IB is
+      * https://community.mellanox.com/docs/DOC-2431
+
+    Usage: benchmarks are installed as Singularity apps.  A few useful commands
+      * singularity apps container.simg
+      * singularity help --app hpcg container.simg
+      * singularity run --app hpcg container.simg
+
+
+%labels
+    maintainer M. Duta
+    version 1.3
+
+
+%files
+    # each line is a pair of <source> (host system path) and <destination> (container path)
+    hpc-mpi-benchmarks-config/ /opt/
+
+
+%post
+    #
+    # --- devel tools
+    # yum install -y wget gcc-gfortran make    # = minimal installation
+    yum groupinstall -y "Development Tools"
+    yum install -y gcc-gfortran wget
+
+
+    # --- Infiniband
+    # yum install -y libibverbs libibverbs-devel infiniband-diags  # = minimal installation
+    # = group installation
+    yum groupinstall -y "Infiniband"
+    yum install      -y libibverbs-devel
+
+
+    #
+    # --- install OpenMPI
+    OPENMPI_VERSION=3.1.4
+    wget https://download.open-mpi.org/release/open-mpi/v${OPENMPI_VERSION%??}/openmpi-${OPENMPI_VERSION}.tar.gz --no-check-certificate
+    tar -xf openmpi-${OPENMPI_VERSION}.tar.gz
+    cd openmpi-${OPENMPI_VERSION}/
+    ./configure \
+       --prefix=/usr/local \
+       --enable-orterun-prefix-by-default \
+       --enable-mpirun-prefix-by-default \
+       --with-verbs
+
+    # Note: "--with-verbs" is not essential, as ibverbs support is picked up automatically
+
+    make
+    make install
+    cd ../
+    rm -fr openmpi-${OPENMPI_VERSION}*
+
+    #
+    # --- make OpenMPI libraries /usr/local/lib available
+    ldconfig
+    ldconfig /usr/local/lib
+
+
+    #
+    # --- mount points to facilitate application disk I/O
+    mkdir -p /applications/hpcg \
+             /applications/osu \
+             /applications/nas \
+             /applications/ior
+
+
+#============================================================#
+# OSU benchmarks (basic micro-benchmark)
+#============================================================#
+%apphelp osu
+    OSU (Ohio State University) micro-benchmarks is a suite of programs
+    used to measure the performance of a MPI implementation.
+
+%appinstall osu
+    OSU_VERSION=5.6.2
+    OSU_PREFIX=/opt/osu/${OSU_VERSION}
+    wget http://mvapich.cse.ohio-state.edu/download/mvapich/osu-micro-benchmarks-${OSU_VERSION}.tar.gz --no-check-certificate
+    tar -xf osu-micro-benchmarks-${OSU_VERSION}.tar.gz
+    cd osu-micro-benchmarks-${OSU_VERSION}/
+    ./configure \
+       CC=mpicc CXX=mpicxx \
+       --prefix=${OSU_PREFIX}
+    make
+    make install
+    cd ../
+    rm -fr osu-micro-benchmarks-${OSU_VERSION}*
+
+
+#============================================================#
+# HPCG benchmarks (weak scaling)
+#============================================================#
+%apphelp hpcg
+    HPCG (High-Performance Conjugate Gradient) is a new community metric for
+    ranking HPC systems, run in distributed mode as a weak scaling benchmark.
+
+    Note: Run parameters are given in the file "hpcg.dat"; if missing, default
+    values are assumed. While adequate for testing the HPCG installation,
+    default values are too small for performance measurements.
+
+%appinstall hpcg
+    HPCG_VERSION=3.1.0
+    HPCG_VERSION_DASH=$(echo ${HPCG_VERSION} | tr "." "-")
+    HPCG_PREFIX=/opt/hpcg/${HPCG_VERSION}
+    wget https://github.com/hpcg-benchmark/hpcg/archive/HPCG-release-${HPCG_VERSION_DASH}.tar.gz
+    tar -xf HPCG-release-${HPCG_VERSION_DASH}.tar.gz
+    cp /opt/hpc-mpi-benchmarks-config/Make.HPCG_Linux_MPI hpcg-HPCG-release-${HPCG_VERSION_DASH}/setup/
+    mkdir build && cd build/
+    ${PWD%/*}/hpcg-HPCG-release-${HPCG_VERSION_DASH}/configure HPCG_Linux_MPI
+    make
+    mkdir -p ${HPCG_PREFIX} && mv bin/* ${HPCG_PREFIX}
+    cd ../
+    rm -fr build/ HPCG-release-${HPCG_VERSION_DASH}.tar.gz hpcg-HPCG-release-${HPCG_VERSION_DASH}/
+
+
+#============================================================#
+# NAS benchmarks (weak scaling)
+#============================================================#
+%apphelp nas
+    NAS (NASA Advanced Supercomputing) Parallel benchmarks are a set of
+    programs designed to evaluate the performance of HPC systems.  The
+    benchmarks are built for a fixed size, configured at build time.  The
+    size class "C" is used for most benchmarks in this container.
+
+%appinstall nas
+    NAS_VERSION=3.4
+    NAS_PREFIX=/opt/nas/${NAS_VERSION}
+    wget https://www.nas.nasa.gov/assets/npb/NPB${NAS_VERSION}.tar.gz
+    tar -xf NPB${NAS_VERSION}.tar.gz
+    cd NPB${NAS_VERSION}/NPB3.4-MPI/
+    cp /opt/hpc-mpi-benchmarks-config/make.NAS_Linux_MPI.def  ./config/make.def
+    cp /opt/hpc-mpi-benchmarks-config/suite.NAS_Linux_MPI.def ./config/suite.def
+    make suite
+    mkdir -p ${NAS_PREFIX}
+    mv bin/* ${NAS_PREFIX}
+    cd ../../
+    rm -fr NPB${NAS_VERSION}.tar.gz NPB${NAS_VERSION}/
+
+
+#============================================================#
+# IOR benchmark
+#============================================================#
+%apphelp ior
+    IOR parallel disk I/O benchmark writes and reads to/from files under
+    several sets of conditions and reports the resulting throughput rates.
+
+%appinstall ior
+    IOR_VERSION=3.0.1
+    IOR_PREFIX=/opt/ior/${IOR_VERSION}
+    wget https://github.com/LLNL/ior/archive/${IOR_VERSION}.tar.gz
+    tar -xf ${IOR_VERSION}.tar.gz
+    cd ior-${IOR_VERSION}/
+    ./bootstrap
+    ./configure --prefix=${IOR_PREFIX} --with-posix --with-mpiio
+    make
+    make install
+    rm -fr ${IOR_VERSION}.tar.gz ior-${IOR_VERSION}/
+
+
+#============================================================#
+# environment: PATH, LD_LIBRARY_PATH, etc.
+#============================================================#
+
+%environment
+    OSU_VERSION=5.6.2
+    OSU_PREFIX=/opt/osu/${OSU_VERSION}/libexec/osu-micro-benchmarks/mpi
+    HPCG_VERSION=3.1.0
+    HPCG_PREFIX=/opt/hpcg/${HPCG_VERSION}
+    NAS_VERSION=3.4
+    NAS_PREFIX=/opt/nas/${NAS_VERSION}
+    IOR_VERSION=3.0.1
+    IOR_PREFIX=/opt/ior/${IOR_VERSION}
+
+    export PATH=${OSU_PREFIX}/pt2pt:${OSU_PREFIX}/collective:${HPCG_PREFIX}:${NAS_PREFIX}:${PATH}:${IOR_PREFIX}/bin
+
+
+#============================================================#
+# script to run with command "singularity run"
+#============================================================#
+
+%runscript
+
+
+#============================================================#
+# script to run with command "singularity test"
+#    if tests need a different environment than that
+#    during the building phase (e.g. tests need the
+#    environment defined in "%environment"), the image
+#    can be built by omitting the test
+#       sudo singularity build --notest mpirun.simg Singularity
+#============================================================#
+
+#%test
+#    mpicc --version
